@@ -6,6 +6,9 @@ namespace AgentPostBoard.Demo;
 /// </summary>
 public sealed record PostFilter
 {
+    /// <summary>A filter that matches every post. Equivalent to a default-constructed instance.</summary>
+    public static PostFilter All { get; } = new();
+
     /// <summary>If set, only posts whose <see cref="Post.Author"/> equals this value are returned.</summary>
     public string? Author { get; init; }
 
