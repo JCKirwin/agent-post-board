@@ -10,16 +10,22 @@ namespace AgentPostBoard.Demo;
 /// </summary>
 /// <remarks>
 /// On-disk format (ADR 0003): one <c>YYYY-MM-DD.md</c> file per UTC day. Each post is a
-/// markdown heading <c>## &lt;timestamp&gt; | &lt;author&gt; | &lt;topic&gt;</c> followed by its body
-/// lines. Posts are ordered by byte position within a file and by filename across files.
-/// A post is only considered readable once its body is present, so a reader that catches a
-/// writer mid-append sees a consistent prefix — it may miss the in-flight post, but never a
-/// torn one.
+/// markdown heading <c>## &lt;timestamp&gt; | &lt;author&gt; | &lt;topic&gt;</c>, then its body lines
+/// (each indented by one space), then a blank line that commits the post. Posts are ordered
+/// by byte position within a file and by filename across files.
+/// <para>
+/// The trailing blank line is the commit marker: the reader only yields a post once it has
+/// seen that terminator. Because a file append fills bytes in order, seeing the terminator
+/// guarantees the whole post precedes it — so a reader that catches a writer mid-append sees a
+/// consistent prefix, missing the in-flight post rather than yielding it half-written. Indenting
+/// body lines keeps post content from ever looking like a heading or the blank terminator.
+/// </para>
 /// </remarks>
 public sealed class FileSystemPostBoard : IPostBoard
 {
     private const string HeadingPrefix = "## ";
     private const string FieldSeparator = " | ";
+    private const string PostTerminator = "\n\n";
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     /// <summary>
@@ -45,7 +51,6 @@ public sealed class FileSystemPostBoard : IPostBoard
         var bytes = Utf8NoBom.GetBytes(Serialize(post));
 
         // FileShare.ReadWrite so a concurrent reader (or writer) is never locked out.
-        // The whole post is written in one call, so readers see all-or-nothing of it.
         await using var stream = new FileStream(
             path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite,
             bufferSize: 4096, useAsync: true);
@@ -94,49 +99,50 @@ public sealed class FileSystemPostBoard : IPostBoard
           .Append(FieldSeparator).Append(EscapeField(post.Topic))
           .Append('\n');
 
+        // Indent every body line by one space so body content can never be mistaken for a
+        // heading ("## ") or the blank commit terminator.
         foreach (var line in SplitLines(post.Body))
         {
-            sb.Append(EscapeBodyLine(line)).Append('\n');
+            sb.Append(' ').Append(line).Append('\n');
         }
 
+        sb.Append('\n'); // blank line commits the post
         return sb.ToString();
     }
 
     private static IEnumerable<Post> ParsePosts(string content)
     {
-        var lines = NormalizeNewlines(content).Split('\n');
-        string? heading = null;
-        var body = new List<string>();
+        var records = NormalizeNewlines(content).Split(PostTerminator);
 
-        foreach (var raw in lines)
+        // Every committed post is followed by the terminator, so the final element is either
+        // empty (the file ended cleanly) or an unterminated tail caught mid-append. Either way
+        // the last element is never a committed post — skipping it is what lets a reader miss an
+        // in-flight post instead of yielding it half-written.
+        for (var i = 0; i < records.Length - 1; i++)
         {
-            if (raw.StartsWith(HeadingPrefix, StringComparison.Ordinal))
+            if (TryBuildPost(records[i], out var post))
             {
-                if (heading is not null && TryBuildPost(heading, body, out var previous))
-                {
-                    yield return previous;
-                }
-
-                heading = raw[HeadingPrefix.Length..];
-                body.Clear();
+                yield return post;
             }
-            else if (heading is not null)
-            {
-                body.Add(UnescapeBodyLine(raw));
-            }
-        }
-
-        if (heading is not null && TryBuildPost(heading, body, out var last))
-        {
-            yield return last;
         }
     }
 
-    private static bool TryBuildPost(string heading, List<string> bodyLines, out Post post)
+    private static bool TryBuildPost(string record, out Post post)
     {
         post = default!;
+        if (record.Length == 0)
+        {
+            return false;
+        }
 
-        var fields = heading.Split(FieldSeparator);
+        var newline = record.IndexOf('\n');
+        var headingLine = newline < 0 ? record : record[..newline];
+        if (!headingLine.StartsWith(HeadingPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var fields = headingLine[HeadingPrefix.Length..].Split(FieldSeparator);
         if (fields.Length < 3)
         {
             return false;
@@ -148,25 +154,23 @@ public sealed class FileSystemPostBoard : IPostBoard
             return false;
         }
 
-        // Each serialized post ends with a trailing newline, which Split turns into a final
-        // empty element. Drop exactly one so the body round-trips, then treat a body with no
-        // real lines as an in-flight (not-yet-committed) post and skip it.
-        var lines = new List<string>(bodyLines);
-        if (lines.Count > 0 && lines[^1].Length == 0)
+        var body = string.Empty;
+        if (newline >= 0)
         {
-            lines.RemoveAt(lines.Count - 1);
+            var bodyLines = record[(newline + 1)..].Split('\n');
+            for (var i = 0; i < bodyLines.Length; i++)
+            {
+                // Strip the one-space indent the writer added.
+                if (bodyLines[i].StartsWith(' '))
+                {
+                    bodyLines[i] = bodyLines[i][1..];
+                }
+            }
+
+            body = string.Join('\n', bodyLines);
         }
 
-        if (lines.Count == 0)
-        {
-            return false;
-        }
-
-        post = new Post(
-            UnescapeField(fields[1]),
-            UnescapeField(fields[2]),
-            string.Join('\n', lines),
-            timestamp);
+        post = new Post(UnescapeField(fields[1]), UnescapeField(fields[2]), body, timestamp);
         return true;
     }
 
@@ -254,12 +258,4 @@ public sealed class FileSystemPostBoard : IPostBoard
 
         return sb.ToString();
     }
-
-    // A body line that would otherwise look like a heading (or a prior escape) is prefixed
-    // with a backslash so the reader never mistakes post content for a new post.
-    private static string EscapeBodyLine(string line)
-        => line.StartsWith('#') || line.StartsWith('\\') ? "\\" + line : line;
-
-    private static string UnescapeBodyLine(string line)
-        => line.StartsWith('\\') ? line[1..] : line;
 }
