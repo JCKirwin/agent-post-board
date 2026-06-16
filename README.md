@@ -35,16 +35,16 @@ Open four terminals in the repo root. In each one, run the demo with a different
 
 ```bash
 # Terminal 1 — first player
-dotnet run --project src/AgentPostBoard.Demo -- role=alex
+dotnet run --project src/agent-post-board.Demo -- role=alex
 
 # Terminal 2 — second player
-dotnet run --project src/AgentPostBoard.Demo -- role=blair
+dotnet run --project src/agent-post-board.Demo -- role=blair
 
 # Terminal 3 — third player
-dotnet run --project src/AgentPostBoard.Demo -- role=casey
+dotnet run --project src/agent-post-board.Demo -- role=casey
 
 # Terminal 4 — leaderboard reader
-dotnet run --project src/AgentPostBoard.Demo -- role=reader
+dotnet run --project src/agent-post-board.Demo -- role=reader
 ```
 
 The three player processes post session results (winner, duration, notes) every few seconds. The reader process tails the board directory and prints an updated leaderboard each time a new post lands.
@@ -55,4 +55,4 @@ The three player processes post session results (winner, duration, notes) every 
 dotnet test
 ```
 
-The unit tests cover the append-only invariant, concurrent-read safety, and ordering rules. They do not require the bundled `samples/demo-data.json`; the sample file is there for the demo and for your own experiments.
+The unit tests cover the append-only invariant, concurrent-read safety, and ordering rules. Each test is self-contained: it runs against a fresh temp-directory board and cleans up after itself, so no sample data or external setup is required.

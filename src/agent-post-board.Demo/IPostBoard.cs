@@ -8,7 +8,7 @@ public interface IPostBoard
 {
     /// <summary>
     /// Append a single post to the board. Returns once the post is durable enough
-    /// that a subsequent <see cref="Read"/> call from any process will observe it.
+    /// that a subsequent <see cref="ReadAsync"/> call from any process will observe it.
     /// </summary>
     /// <param name="post">The post to append. Treated as immutable by the board.</param>
     /// <param name="cancellationToken">Token to cancel the append.</param>
